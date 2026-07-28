@@ -1,5 +1,6 @@
 #include "ax12.h"
 
+/* Dynamixel Protocol 1.0 instruction values used by this driver. */
 #define AX12_HEADER             0xFFU
 #define AX12_INSTRUCTION_PING   0x01U
 #define AX12_INSTRUCTION_READ   0x02U
@@ -10,6 +11,7 @@ static uint8_t AX12_Checksum(const uint8_t *data, uint8_t length)
 {
   uint8_t sum = 0U;
 
+  /* Protocol 1.0 checksum is the inverted low byte of the field sum. */
   for (uint8_t i = 0U; i < length; ++i)
   {
     sum = (uint8_t)(sum + data[i]);
@@ -20,6 +22,7 @@ static uint8_t AX12_Checksum(const uint8_t *data, uint8_t length)
 
 static uint32_t AX12_RemainingTime(uint32_t started_at, uint32_t timeout_ms)
 {
+  /* Unsigned subtraction remains valid when the HAL tick counter wraps. */
   uint32_t elapsed = HAL_GetTick() - started_at;
 
   return (elapsed < timeout_ms) ? (timeout_ms - elapsed) : 0U;
@@ -35,7 +38,13 @@ static AX12_Result AX12_ReceiveStatus(AX12_Handle *ax12, uint8_t expected_id,
   uint32_t started_at = HAL_GetTick();
   uint32_t remaining;
 
-  /* Find the two-byte header while tolerating a stray byte on the bus. */
+  /*
+   * Status packet:
+   *   FF FF | ID | LENGTH | ERROR | PARAMS... | CHECKSUM
+   *
+   * Search for the header first so a stale or echoed byte cannot shift every
+   * following field.
+   */
   do
   {
     remaining = AX12_RemainingTime(started_at, ax12->timeout_ms);
@@ -61,6 +70,7 @@ static AX12_Result AX12_ReceiveStatus(AX12_Handle *ax12, uint8_t expected_id,
 
   uint8_t response_id = status[0];
   uint8_t response_length = status[1];
+  /* LENGTH includes ERROR, PARAMS, and CHECKSUM, but not ID or LENGTH. */
   if ((response_id != expected_id) ||
       (response_length < 2U) ||
       (response_length > (AX12_MAX_PARAMS + 2U)))
@@ -76,6 +86,7 @@ static AX12_Result AX12_ReceiveStatus(AX12_Handle *ax12, uint8_t expected_id,
   }
 
   uint8_t checksum_data[AX12_MAX_PARAMS + 3U];
+  /* The checksum covers ID through the final parameter, not the FF headers. */
   checksum_data[0] = response_id;
   checksum_data[1] = response_length;
   for (uint8_t i = 0U; i < (response_length - 1U); ++i)
@@ -95,6 +106,7 @@ static AX12_Result AX12_ReceiveStatus(AX12_Handle *ax12, uint8_t expected_id,
     return AX12_ERROR_DEVICE;
   }
 
+  /* Remove ERROR and CHECKSUM from LENGTH to obtain the payload size. */
   uint8_t param_count = (uint8_t)(response_length - 2U);
   if (received_count != NULL)
   {
@@ -133,6 +145,10 @@ static AX12_Result AX12_SendInstruction(AX12_Handle *ax12, uint8_t id,
     return AX12_ERROR_ARGUMENT;
   }
 
+  /*
+   * Instruction packet:
+   *   FF FF | ID | LENGTH | INSTRUCTION | PARAMS... | CHECKSUM
+   */
   packet[0] = AX12_HEADER;
   packet[1] = AX12_HEADER;
   packet[2] = id;
@@ -151,8 +167,10 @@ static AX12_Result AX12_SendInstruction(AX12_Handle *ax12, uint8_t id,
       AX12_Checksum(checksum_data, (uint8_t)(param_count + 3U));
 
   ax12->last_device_error = 0U;
+  /* Discard a stale byte before changing the shared DATA line to TX mode. */
   __HAL_UART_FLUSH_DRREGISTER(ax12->uart);
 
+  /* The single UART pin must drive the bus only while sending the command. */
   if (HAL_HalfDuplex_EnableTransmitter(ax12->uart) != HAL_OK)
   {
     return AX12_ERROR_UART;
@@ -165,9 +183,11 @@ static AX12_Result AX12_SendInstruction(AX12_Handle *ax12, uint8_t id,
 
   if (id == AX12_BROADCAST_ID)
   {
+    /* Broadcast instructions never produce a status packet. */
     return AX12_OK;
   }
 
+  /* Release the DATA line and listen for the selected motor's status packet. */
   if (HAL_HalfDuplex_EnableReceiver(ax12->uart) != HAL_OK)
   {
     return AX12_ERROR_UART;
@@ -212,6 +232,7 @@ AX12_Result AX12_WriteByte(AX12_Handle *ax12, uint8_t id,
 AX12_Result AX12_WriteWord(AX12_Handle *ax12, uint8_t id,
                           uint8_t address, uint16_t value)
 {
+  /* AX-12 control-table words use low byte first. */
   const uint8_t params[] = {
       address,
       (uint8_t)(value & 0xFFU),
@@ -267,6 +288,7 @@ AX12_Result AX12_ReadWord(AX12_Handle *ax12, uint8_t id,
     return AX12_ERROR_PACKET;
   }
 
+  /* Reassemble the little-endian control-table word. */
   *value = (uint16_t)response[0] | ((uint16_t)response[1] << 8U);
   return AX12_OK;
 }
@@ -288,6 +310,7 @@ AX12_Result AX12_SetReturnDelayTime(AX12_Handle *ax12, uint8_t id, uint8_t delay
 
 AX12_Result AX12_SetPositionMode(AX12_Handle *ax12, uint8_t id)
 {
+  /* Joint mode uses the full AX-12A position range: 0 through 1023. */
   AX12_Result result = AX12_WriteWord(ax12, id, AX12_ADDR_CW_LIMIT, 0U);
   if (result != AX12_OK)
   {
@@ -299,6 +322,7 @@ AX12_Result AX12_SetPositionMode(AX12_Handle *ax12, uint8_t id)
 
 AX12_Result AX12_SetWheelMode(AX12_Handle *ax12, uint8_t id)
 {
+  /* Setting both angle limits to zero selects continuous wheel mode. */
   AX12_Result result = AX12_WriteWord(ax12, id, AX12_ADDR_CW_LIMIT, 0U);
   if (result != AX12_OK)
   {
@@ -321,6 +345,7 @@ AX12_Result AX12_SetTorque(AX12_Handle *ax12, uint8_t id, bool enabled)
 AX12_Result AX12_SetGoalPosition(AX12_Handle *ax12, uint8_t id,
                                 uint16_t position)
 {
+  /* AX-12A position values are 10-bit values. */
   if (position > 1023U)
   {
     return AX12_ERROR_ARGUMENT;
@@ -332,6 +357,7 @@ AX12_Result AX12_SetGoalPosition(AX12_Handle *ax12, uint8_t id,
 AX12_Result AX12_SetMovingSpeed(AX12_Handle *ax12, uint8_t id,
                                uint16_t speed)
 {
+  /* Moving Speed also uses the AX-12A 10-bit control-table range. */
   if (speed > 1023U)
   {
     return AX12_ERROR_ARGUMENT;
