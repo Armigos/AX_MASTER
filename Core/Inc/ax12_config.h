@@ -25,6 +25,12 @@
 #define AX12_MASTER_ESTOP_SYNC_SPEED 30U
 #define AX12_MASTER_ESTOP_SYNC_TOLERANCE 10U
 
+/* Auto-sequence arrival window.  The gripper is slave axis 2 (array index 1)
+ * and may stop short when it clamps an object, so it is allowed a wider
+ * completion range.  Other axes continue to use the teaching tolerance. */
+#define AX12_AUTO_GRIPPER_AXIS_INDEX 1U
+#define AX12_AUTO_GRIPPER_TOLERANCE 80U
+
 #define AX12_MAX_PACKET              32U
 #define AX12_ADDR_TORQUE_ENABLE      24U
 #define AX12_ADDR_GOAL_POSITION      30U

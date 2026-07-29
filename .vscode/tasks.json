@@ -7,7 +7,7 @@
             "command": "C:\\ST\\STM32CubeIDE_2.2.0\\STM32CubeIDE\\plugins\\com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.win32_2.2.500.202603051304\\tools\\bin\\STM32_Programmer_CLI.exe",
             "args": [
                 "-c", "port=SWD mode=UR",
-                "-w", "build/Debug/Armigo.elf",
+                "-w", "build/Debug/AX_MASTER.elf",
                 "-v",
                 "-rst"
             ],

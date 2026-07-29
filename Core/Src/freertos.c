@@ -175,8 +175,8 @@ static GPIO_TypeDef* COL_PORTS[4] = {GPIOC, GPIOC, GPIOC, GPIOC};
 static uint16_t       COL_PINS[4]  = {GPIO_PIN_6, GPIO_PIN_7, GPIO_PIN_8, GPIO_PIN_9};
 
 static const uint8_t KEY_MAP[4][4] = {
-    { 5,  6,  7,  8},
     { 1,  2,  3,  4},
+    { 5,  6,  7,  8},
     { 9, 10, 11, 12},
     {13, 14, 15, 16}
 };
@@ -926,7 +926,9 @@ static void BT_ProcessReceivedByte(uint8_t x)
     for (uint8_t k = 0U; k < 4U; ++k)
     {
       uint16_t tolerance = (g_motion_type == MOTION_AUTO) ?
-                           TEACHING_STEP_POSITION_TOLERANCE :
+                           ((k == AX12_AUTO_GRIPPER_AXIS_INDEX) ?
+                            AX12_AUTO_GRIPPER_TOLERANCE :
+                            TEACHING_STEP_POSITION_TOLERANCE) :
                            HOME_POSITION_TOLERANCE;
       uint16_t error;
       g_slave_axis[k] = (uint16_t)d[k * 2U] |
@@ -937,7 +939,7 @@ static void BT_ProcessReceivedByte(uint8_t x)
       error = (g_slave_axis[k] > g_motion_target[k]) ?
               (g_slave_axis[k] - g_motion_target[k]) :
               (g_motion_target[k] - g_slave_axis[k]);
-      if (error > tolerance) arrived = false; /* ±5 includes exactly 5. */
+      if (error > tolerance) arrived = false; /* boundary value is included. */
     }
 
     g_motor_load = (uint16_t)(load_sum / 4U);

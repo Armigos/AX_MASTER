@@ -1,10 +1,10 @@
-# Master_fusion
+# AX_MASTER
 
 STM32F411RE 기반 로봇팔 마스터 펌웨어입니다. AX-12A 마스터 모터
 4개의 현재 위치를 읽고, Fusion UART 프로토콜로 AX_SLAVE에 전달합니다.
 LCD, 키패드, Sharp 센서, TelePlot을 FreeRTOS 태스크로 함께 처리합니다.
 
-- GitHub: https://github.com/Armigos/Master_fusion
+- GitHub: https://github.com/Armigos/AX_MASTER
 - 최적화 브랜치: `feature/uart-interrupt`
 - 대응 슬레이브: https://github.com/Armigos/AX_SLAVE
 
@@ -15,7 +15,7 @@ AX-12A Master x4 (ID 10, 11, 12, 14)
              |
              | USART1 Half-Duplex, 1 Mbps
              v
-NUCLEO-F411RE / Master_fusion
+NUCLEO-F411RE / AX_MASTER
              |
              | USART6, 115200
              v
@@ -37,7 +37,7 @@ ST-LINK VCP <-- USART2, 115200 --> TelePlot / console
 
 UART 형식은 8 data bits, no parity, 1 stop bit입니다.
 
-> `Master_fusion`의 USART6 핀은 PA11/PA12입니다. AX_SLAVE의
+> `AX_MASTER`의 USART6 핀은 PA11/PA12입니다. AX_SLAVE의
 > PC6/PC7과 같지 않으므로 유선 시험 시 핀을 혼동하지 마십시오.
 
 ## AX-12 배선
@@ -107,7 +107,7 @@ AA 55 CMD LEN PAYLOAD... CHECKSUM
 
 Bluetooth를 제거하고 먼저 UART6를 직접 시험하는 것이 좋습니다.
 
-| Master_fusion | AX_SLAVE |
+| AX_MASTER | AX_SLAVE |
 |---|---|
 | PA11 / USART6_TX | PC7 / USART6_RX |
 | PA12 / USART6_RX | PC6 / USART6_TX |
@@ -118,7 +118,7 @@ Bluetooth를 제거하고 먼저 UART6를 직접 시험하는 것이 좋습니�
 
 ## HC-05 연결
 
-| Master_fusion | Master HC-05 |
+| AX_MASTER | Master HC-05 |
 |---|---|
 | PA11 / USART6_TX | RXD |
 | PA12 / USART6_RX | TXD |
@@ -145,7 +145,7 @@ ST-LINK Virtual COM Port를 115200으로 열면 다음 네 값만 그래프로
 
 | 파일 | 역할 |
 |---|---|
-| `Master_fusion.ioc` | CubeMX 핀, UART, NVIC 설정 |
+| `AX_MASTER.ioc` | CubeMX 핀, UART, NVIC 설정 |
 | `Core/Inc/ax12.h` | 마스터 ID와 AX-12 API |
 | `Core/Src/ax12.c` | AX-12 Protocol 1.0 및 비동기 위치 읽기 |
 | `Core/Src/freertos.c` | 태스크, Fusion 프로토콜, TelePlot, 키패드 |
@@ -156,7 +156,7 @@ ST-LINK Virtual COM Port를 115200으로 열면 다음 네 값만 그래프로
 
 ## 빌드
 
-STM32CubeIDE에서 `Master_fusion.ioc`를 열어 빌드하거나 CMake preset을
+STM32CubeIDE에서 `AX_MASTER.ioc`를 열어 빌드하거나 CMake preset을
 사용합니다.
 
 ```bash
@@ -167,7 +167,7 @@ cmake --build --preset Debug
 결과 파일:
 
 ```text
-build/Debug/Armigo.elf
+build/Debug/AX_MASTER.elf
 ```
 
 다른 경로에서 복사한 프로젝트라 CMake cache 오류가 나면 `build`
@@ -178,7 +178,7 @@ build/Debug/Armigo.elf
 1. 마스터 AX-12A를 한 개씩 연결해 ID와 1 Mbps 응답을 확인합니다.
 2. TelePlot에서 네 `master_n_pos`가 손 움직임을 따라가는지 확인합니다.
 3. UART6 유선 교차 연결 후 양쪽 보드를 Reset합니다.
-4. Master_fusion 키패드 버튼 15를 눌러 JOG 모드로 진입합니다.
+4. AX_MASTER 키패드 버튼 15를 눌러 JOG 모드로 진입합니다.
 5. 슬레이브 콘솔에서 유효 프레임과 Torque ON 상태를 확인합니다.
 6. 슬레이브 모터 1, 2, 3, 5가 각각 10, 11, 12, 14를 따라가는지 봅니다.
 7. 유선 시험이 성공한 뒤 HC-05 두 개로 교체합니다.
