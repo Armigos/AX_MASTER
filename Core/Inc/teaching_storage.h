@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define TEACHING_PRESET_COUNT 11U
+#define TEACHING_PRESET_COUNT 10U
 #define TEACHING_AXIS_COUNT    4U
 #define TEACHING_SEQUENCE_STEPS 30U /* Up to 30 sequential robot actions. */
 #define TEACHING_EMPTY_AXIS_VALUE 0xFFFFU /* Unused step: NULL-equivalent. */

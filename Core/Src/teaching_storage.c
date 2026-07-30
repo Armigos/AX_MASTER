@@ -8,7 +8,7 @@
 #define TEACHING_FLASH_SECTOR FLASH_SECTOR_7
 /* Changed with the 30-step record layout. Older 10-step records are safely
  * ignored and the sector is erased on the first save. */
-#define TEACHING_MAGIC        0x54454349UL
+#define TEACHING_MAGIC        0x5445434AUL
 
 typedef struct
 {

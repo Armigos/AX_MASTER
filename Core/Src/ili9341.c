@@ -115,14 +115,23 @@ void ILI9341_Init(void) {
 // 화면 전체 채우기
 void ILI9341_FillScreen(uint16_t color) {
     ILI9341_SetAddressWindow(0, 0, ILI9341_WIDTH - 1, ILI9341_HEIGHT - 1);
-    
+
     LCD_DC_DATA();
     uint8_t color_high = color >> 8;
     uint8_t color_low = color & 0xFF;
+    uint8_t pixels[128]; /* 64 RGB565 pixels per SPI transaction. */
 
-    for (uint32_t i = 0; i < (uint32_t)ILI9341_WIDTH * ILI9341_HEIGHT; i++) {
-        ILI9341_SPI_Send(color_high);
-        ILI9341_SPI_Send(color_low);
+    for (uint16_t i = 0U; i < sizeof(pixels); i += 2U) {
+        pixels[i] = color_high;
+        pixels[i + 1U] = color_low;
+    }
+
+    uint32_t bytes_remaining = (uint32_t)ILI9341_WIDTH * ILI9341_HEIGHT * 2U;
+    while (bytes_remaining > 0U) {
+        uint16_t length = (bytes_remaining > sizeof(pixels)) ?
+                          (uint16_t)sizeof(pixels) : (uint16_t)bytes_remaining;
+        (void)HAL_SPI_Transmit(&hspi1, pixels, length, HAL_MAX_DELAY);
+        bytes_remaining -= length;
     }
 }
 

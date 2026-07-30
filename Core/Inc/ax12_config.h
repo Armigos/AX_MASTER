@@ -9,7 +9,7 @@
 
 #define AX12_MASTER_1_MIN_POSITION  140U
 #define AX12_MASTER_1_MAX_POSITION  900U
-#define AX12_MASTER_2_MIN_POSITION  365U
+#define AX12_MASTER_2_MIN_POSITION  300U
 #define AX12_MASTER_2_MAX_POSITION  750U
 #define AX12_MASTER_3_MIN_POSITION  400U
 #define AX12_MASTER_3_MAX_POSITION 1023U
@@ -23,7 +23,7 @@
 /* Controller alignment used after PB2 E-stop.  The controller moves to the
  * robot's held pose before BTN15 can enable manual JOG. */
 #define AX12_MASTER_ESTOP_SYNC_SPEED 30U
-#define AX12_MASTER_ESTOP_SYNC_TOLERANCE 10U
+#define AX12_MASTER_ESTOP_SYNC_TOLERANCE 10U  
 
 /* Auto-sequence arrival window.  The gripper is slave axis 2 (array index 1)
  * and may stop short when it clamps an object, so it is allowed a wider
@@ -36,5 +36,7 @@
 #define AX12_ADDR_GOAL_POSITION      30U
 #define AX12_ADDR_MOVING_SPEED       32U
 #define AX12_ADDR_PRESENT_POS        36U
+#define AX12_ADDR_PRESENT_VOLTAGE     42U
+#define AX12_ADDR_PRESENT_TEMPERATURE 43U
 
 #endif

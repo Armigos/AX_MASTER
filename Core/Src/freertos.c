@@ -99,6 +99,7 @@ typedef enum {
 #define KEYPAD_SCAN_PERIOD_MS        2U
 #define KEYPAD_DEBOUNCE_SAMPLES      3U
 #define KEYPAD_EVENT_QUEUE_DEPTH    16U
+#define AX12_ADMIN_MONITOR_PERIOD_MS 150U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -115,6 +116,8 @@ uint8_t bt_to_pc_tail = 0;
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 uint16_t g_robot_axis[4]       = {512, 512, 512, 512};
+volatile uint16_t g_master_voltage_mv[4] = {0U, 0U, 0U, 0U};
+volatile uint8_t g_master_temperature_c[4] = {0U, 0U, 0U, 0U};
 uint16_t g_prev_axis[4]       = {0, 0, 0, 0};
 volatile uint16_t g_slave_axis[4] = {512, 512, 512, 512};
 volatile uint16_t g_slave_load[4] = {0, 0, 0, 0};
@@ -133,10 +136,13 @@ uint8_t      g_homing_status   = 0; /* 0:idle, 1:moving, 2:completed */
  * reaches the verified slave positions. */
 static volatile bool g_home_ready = false;
 volatile bool g_admin_jog_enabled = false;
+static volatile bool g_admin_dashboard_enabled = false;
+static volatile bool g_admin_dashboard_clear_requested = false;
 static volatile bool g_estop_request = false;
 volatile uint32_t g_slave_status_sequence = 0U;
 volatile bool g_auto_motion_released = false;
 uint8_t g_teach_save_status = 0U; /* 0:none, 1:saved, 2:flash error */
+uint8_t g_teach_delete_status = 0U; /* 0:none, 1:deleted, 2:flash error, 3:no preset */
 volatile uint32_t g_teach_save_event_sequence = 0U;
 volatile uint32_t g_lcd_event_sequence = 0U;
 
@@ -505,8 +511,10 @@ void Start_AX_12(void *argument)
 {
   /* USER CODE BEGIN Start_AX_12 */
   uint8_t motor_index = 0U;
+  uint8_t voltage_motor_index = 0U;
   bool read_pending = false;
   uint32_t read_started_ms = 0U;
+  uint32_t last_voltage_read_ms = 0U;
   uint32_t last_tx_ms = 0U;
   uint32_t last_status_request_ms = 0U;
   (void)argument;
@@ -689,6 +697,26 @@ void Start_AX_12(void *argument)
         motor_index = (uint8_t)((motor_index + 1U) % AX12_NUM_MOTORS);
       }
     }
+    else if ((now_ms - last_voltage_read_ms) >=
+             (g_admin_jog_enabled ? AX12_ADMIN_MONITOR_PERIOD_MS : 250U))
+    {
+      uint8_t voltage_raw = 0U;
+      uint8_t temperature_raw = 0U;
+
+      /* AX-12A: address 42 is Present Voltage (0.1 V), address 43 is temperature. */
+      if (AX12_Read2(AX12_GetMotorId(voltage_motor_index),
+                     AX12_ADDR_PRESENT_VOLTAGE,
+                     &voltage_raw, &temperature_raw) == HAL_OK)
+      {
+        g_master_voltage_mv[voltage_motor_index] =
+            (uint16_t)voltage_raw * 100U;
+        g_master_temperature_c[voltage_motor_index] = temperature_raw;
+      }
+
+      voltage_motor_index =
+          (uint8_t)((voltage_motor_index + 1U) % AX12_NUM_MOTORS);
+      last_voltage_read_ms = now_ms;
+    }
     else if (AX12_StartPositionReadIT(AX12_GetMotorId(motor_index)) == HAL_OK)
     {
       read_pending = true;
@@ -728,10 +756,19 @@ void Start_AX_12(void *argument)
 void Start_Teleplot(void *argument)
 {
   /* USER CODE BEGIN Start_Teleplot */
-  /* Infinite loop */
+  (void)argument;
   for(;;)
   {
-    osDelay(1);
+    /* Teleplot format: >variable_name:value */
+    printf(">master_axis1:%u\r\n", (unsigned)g_robot_axis[0]);
+    printf(">master_axis2:%u\r\n", (unsigned)g_robot_axis[1]);
+    printf(">master_axis3:%u\r\n", (unsigned)g_robot_axis[2]);
+    printf(">master_axis4:%u\r\n", (unsigned)g_robot_axis[3]);
+    printf(">master_voltage1_mV:%u\r\n", (unsigned)g_master_voltage_mv[0]);
+    printf(">master_voltage2_mV:%u\r\n", (unsigned)g_master_voltage_mv[1]);
+    printf(">master_voltage3_mV:%u\r\n", (unsigned)g_master_voltage_mv[2]);
+    printf(">master_voltage4_mV:%u\r\n", (unsigned)g_master_voltage_mv[3]);
+    osDelay(50U);
   }
   /* USER CODE END Start_Teleplot */
 }
@@ -989,7 +1026,7 @@ void Robot_SetGoalPosition(uint8_t id,uint16_t p){uint8_t d[3]={id,(uint8_t)p,(u
 void Robot_SetTorque(uint8_t e){uint8_t d[1]={(e!=0U)?1U:0U};BT_SendPacket(BT_CMD_SET_TORQUE,d,1);}
 void Robot_SetHomePositions(const uint16_t p[4]){if(p)for(uint8_t i=0;i<4;i++)g_home_positions[i]=(p[i]<=1023U)?p[i]:1023U;}
 static void MasterController_RequestAction(MasterControllerAction_t action){__disable_irq();g_master_controller_action=action;__enable_irq();}
-static void SetSystemMode(SystemMode_t mode){g_system_mode=mode;g_admin_jog_enabled=(mode==MODE_ADMIN_JOG)||(mode==MODE_TEACHING);++g_lcd_event_sequence;}
+static void SetSystemMode(SystemMode_t mode){g_system_mode=mode;g_admin_jog_enabled=(mode==MODE_ADMIN_JOG)||(mode==MODE_TEACHING);if(mode!=MODE_ADMIN_JOG){g_admin_dashboard_enabled=false;g_admin_dashboard_clear_requested=false;}++g_lcd_event_sequence;}
 static uint8_t TeachingSequence_CountSaved(uint8_t preset){uint8_t count=0U;if(preset<=TEACHING_PRESET_COUNT)for(uint8_t i=0U;i<TEACHING_SEQUENCE_STEPS;i++)count+=(g_teach_memory[preset].saved_mask&(1U<<i))?1U:0U;return count;}
 static uint8_t TeachingSequence_Rank(uint8_t preset,uint8_t step){uint8_t rank=0U;if(preset<=TEACHING_PRESET_COUNT)for(uint8_t i=0U;i<=step&&i<TEACHING_SEQUENCE_STEPS;i++)rank+=(g_teach_memory[preset].saved_mask&(1U<<i))?1U:0U;return rank;}
 static void AutoScheduleFollowingStep(void)
@@ -1050,9 +1087,20 @@ void Process_Key_Event(uint8_t key)
       ++g_lcd_event_sequence;
       return;
     }
+    /* First BTN15 enters normal Admin JOG.  A second press, while already
+     * jogging, opens the dashboard without restarting or interrupting JOG. */
+    if ((g_system_mode == MODE_ADMIN_JOG) && !g_emergency_stop)
+    {
+      g_admin_dashboard_enabled = true;
+      g_admin_dashboard_clear_requested = true;
+      ++g_lcd_event_sequence;
+      g_prev_mode = (SystemMode_t)0xFF;
+      return;
+    }
     g_emergency_stop = false;
     g_estop_waiting_slave_pose = false;
     g_estop_sync_active = false;
+    g_admin_dashboard_enabled = false;
     SetSystemMode(MODE_ADMIN_JOG);
     g_run_state = RUN_STATE_STOPPED;
     g_motion_type = MOTION_NONE;
@@ -1085,7 +1133,9 @@ void Process_Key_Event(uint8_t key)
     g_auto_sequence_last_sent = false;
     /* Teaching records the live master pose, so it must stream just like
      * Admin JOG while the operator moves the controller. */
+    g_selected_preset = 0U;
     g_teach_save_status = 0U;
+    g_teach_delete_status = 0U;
     MasterController_RequestAction(MASTER_CTRL_ACTION_MANUAL);
     Robot_SetTorque(1U);
     g_prev_mode = (SystemMode_t)0xFF;
@@ -1135,6 +1185,36 @@ void Process_Key_Event(uint8_t key)
     return;
   }
 
+  /* In Teaching mode BTN11 deletes the complete selected preset (P01..P10)
+   * and commits the empty sequence to Flash immediately. */
+  if ((key == 11U) && (g_system_mode == MODE_TEACHING))
+  {
+    g_teach_save_status = 0U;
+    if ((g_selected_preset >= 1U) &&
+        (g_selected_preset <= TEACHING_PRESET_COUNT))
+    {
+      TeachingSequence_t *preset = &g_teach_memory[g_selected_preset];
+      preset->saved_mask = 0U;
+      for (uint8_t step = 0U; step < TEACHING_SEQUENCE_STEPS; ++step)
+      {
+        for (uint8_t axis = 0U; axis < TEACHING_AXIS_COUNT; ++axis)
+        {
+          preset->step[step].axis[axis] = TEACHING_EMPTY_AXIS_VALUE;
+        }
+      }
+      g_teach_capture_step = 0U;
+      g_teach_delete_status = TeachingStorage_Save(g_teach_memory) ? 1U : 2U;
+      if (g_teach_delete_status == 1U) ++g_teach_save_event_sequence;
+    }
+    else
+    {
+      g_teach_delete_status = 3U;
+    }
+    ++g_lcd_event_sequence;
+    g_prev_mode = (SystemMode_t)0xFF;
+    return;
+  }
+
   if ((key == 12U) && (g_system_mode == MODE_TEACHING))
   {
     TeachingPoint_t *slot=&g_teach_memory[g_selected_preset].step[g_teach_capture_step];
@@ -1147,6 +1227,7 @@ void Process_Key_Event(uint8_t key)
       g_teach_save_status=TeachingStorage_Save(g_teach_memory)?1U:2U;
       if(g_teach_save_status==1U){++g_teach_save_event_sequence;g_teach_capture_step=(uint8_t)((g_teach_capture_step+1U)%TEACHING_SEQUENCE_STEPS);}
     }else g_teach_save_status=3U;
+    g_teach_delete_status=0U;
     g_admin_jog_enabled=true;
     ++g_lcd_event_sequence;
     g_prev_mode=(SystemMode_t)0xFF;
@@ -1160,6 +1241,7 @@ void Process_Key_Event(uint8_t key)
     {
       g_teach_capture_step = 0U;
       g_teach_save_status = 0U;
+      g_teach_delete_status = 0U;
       g_admin_jog_enabled = true;
       ++g_lcd_event_sequence;
     }
@@ -1193,13 +1275,115 @@ uint8_t Keypad_Scan(void)
   return 0;
 }
 
+static void LCD_DrawDashboardGrid(void)
+{
+  for (uint16_t y = 0U; y < ILI9341_HEIGHT; y += 8U)
+  {
+    ILI9341_DrawPixelScaled(158U, y, ILI9341_BLUE, 2U);
+  }
+  for (uint16_t x = 0U; x < ILI9341_WIDTH; x += 8U)
+  {
+    ILI9341_DrawPixelScaled(x, 118U, ILI9341_BLUE, 2U);
+  }
+}
+
+static void LCD_DrawDashboardArc(uint16_t center_x, uint16_t center_y,
+                                 uint8_t active_dots, uint16_t active_color)
+{
+  static const int8_t gauge_x[13] =
+      {-48, -46, -40, -32, -22, -11, 0, 11, 22, 32, 40, 46, 48};
+  static const int8_t gauge_y[13] =
+      {0, -17, -30, -40, -47, -51, -53, -51, -47, -40, -30, -17, 0};
+
+  for (uint8_t dot = 0U; dot < 13U; ++dot)
+  {
+    ILI9341_DrawPixelScaled((uint16_t)((int16_t)center_x + gauge_x[dot]),
+                            (uint16_t)((int16_t)center_y + gauge_y[dot]),
+                            (dot < active_dots) ? active_color : ILI9341_BLACK,
+                            4U);
+  }
+}
+
+static void LCD_DrawDashboardNeedle(uint16_t center_x, uint16_t center_y,
+                                    uint8_t dot_index, uint16_t color)
+{
+  static const int8_t gauge_x[13] =
+      {-48, -46, -40, -32, -22, -11, 0, 11, 22, 32, 40, 46, 48};
+  static const int8_t gauge_y[13] =
+      {0, -17, -30, -40, -47, -51, -53, -51, -47, -40, -30, -17, 0};
+  int16_t x0 = (int16_t)center_x;
+  int16_t y0 = (int16_t)center_y;
+  int16_t x1;
+  int16_t y1;
+  int16_t dx;
+  int16_t dy;
+  int16_t sx;
+  int16_t sy;
+  int16_t error;
+
+  if (dot_index >= 13U) dot_index = 12U;
+  x1 = (int16_t)center_x + gauge_x[dot_index];
+  y1 = (int16_t)center_y + gauge_y[dot_index];
+  dx = (x1 >= x0) ? (x1 - x0) : (x0 - x1);
+  dy = (y1 >= y0) ? (y1 - y0) : (y0 - y1);
+  sx = (x0 < x1) ? 1 : -1;
+  sy = (y0 < y1) ? 1 : -1;
+  error = (int16_t)(dx - dy);
+
+  for (;;)
+  {
+    ILI9341_DrawPixelScaled((uint16_t)x0, (uint16_t)y0, color, 2U);
+    if ((x0 == x1) && (y0 == y1)) break;
+    int16_t twice_error = (int16_t)(2 * error);
+    if (twice_error > -dy) { error = (int16_t)(error - dy); x0 += sx; }
+    if (twice_error < dx)  { error = (int16_t)(error + dx); y0 += sy; }
+  }
+}
+
+static void LCD_GetMasterAxisLimits(uint8_t axis, uint16_t *min_position,
+                                    uint16_t *max_position)
+{
+  uint8_t motor_id = AX12_GetMotorId(axis);
+  uint16_t min_value = AX12_MASTER_4_MIN_POSITION;
+  uint16_t max_value = AX12_MASTER_4_MAX_POSITION;
+
+  if (motor_id == AX12_MASTER_1_ID)
+  {
+    min_value = AX12_MASTER_1_MIN_POSITION;
+    max_value = AX12_MASTER_1_MAX_POSITION;
+  }
+  else if (motor_id == AX12_MASTER_2_ID)
+  {
+    min_value = AX12_MASTER_2_MIN_POSITION;
+    max_value = AX12_MASTER_2_MAX_POSITION;
+  }
+  else if (motor_id == AX12_MASTER_3_ID)
+  {
+    min_value = AX12_MASTER_3_MIN_POSITION;
+    max_value = AX12_MASTER_3_MAX_POSITION;
+  }
+
+  if (min_position != NULL) *min_position = min_value;
+  if (max_position != NULL) *max_position = max_value;
+}
+
+static bool LCD_IsMasterAxisAtLimit(uint8_t axis, uint16_t position)
+{
+  uint16_t min_position;
+  uint16_t max_position;
+
+  LCD_GetMasterAxisLimits(axis, &min_position, &max_position);
+  return (position <= min_position) || (position >= max_position);
+}
+
 void Update_LCD1_Clean(void)
 {
-  bool changed[4] = {false, false, false, false};
   bool any_change = false;
-  static bool header_drawn = false;
+  static bool dashboard_drawn = false;
   static bool estop_screen_drawn = false;
   static bool previous_estop_sync = false;
+  static uint8_t previous_needle_dot[AX12_NUM_MOTORS] =
+      {0xFFU, 0xFFU, 0xFFU, 0xFFU};
   char buf[20];
 
   if (g_emergency_stop)
@@ -1216,7 +1400,9 @@ void Update_LCD1_Clean(void)
     osMutexRelease(lcdSpiMutexHandle);
     estop_screen_drawn = true;
     previous_estop_sync = g_estop_sync_active;
-    header_drawn = false;
+    dashboard_drawn = false;
+    for (uint8_t axis = 0U; axis < AX12_NUM_MOTORS; ++axis)
+      previous_needle_dot[axis] = 0xFFU;
     return;
   }
 
@@ -1230,41 +1416,72 @@ void Update_LCD1_Clean(void)
     osMutexRelease(lcdSpiMutexHandle);
     estop_screen_drawn = false;
     previous_estop_sync = false;
-    header_drawn = false;
+    dashboard_drawn = false;
+    for (uint8_t axis = 0U; axis < AX12_NUM_MOTORS; ++axis)
+      previous_needle_dot[axis] = 0xFFU;
   }
 
   for (uint8_t i = 0U; i < 4U; ++i)
   {
     if (g_robot_axis[i] != g_prev_axis[i])
     {
-      changed[i] = true;
       any_change = true;
     }
   }
-  if (!any_change && header_drawn) return;
-  bool first_draw = !header_drawn;
+  if (!any_change && dashboard_drawn) return;
 
   if (osMutexWait(lcdSpiMutexHandle, 5U) != osOK) return;
   LCD2_CS_HIGH();
   LCD1_CS_LOW();
 
-  if (!header_drawn)
+  if (!dashboard_drawn)
   {
-    LCD_PutString(LCD1_START_X, LCD1_START_Y, "[CURRENT POSITION]", ILI9341_YELLOW, ILI9341_BLACK, LCD1_TITLE_SCALE);
-    header_drawn = true;
+    /* A dashboard redraw begins from a clean screen, so mode/error screens
+     * can never leave larger glyphs behind it. */
+    ILI9341_FillScreen(ILI9341_BLACK);
   }
+  LCD_DrawDashboardGrid();
 
   for (uint8_t i = 0U; i < 4U; ++i)
   {
-    if (changed[i] || first_draw)
-    {
-      uint16_t y = (uint16_t)(LCD1_START_Y + LCD1_LINE_HEIGHT * (i + 1U));
-      snprintf(buf, sizeof(buf), "Axis%u : %-4u", (unsigned)(i + 1U), (unsigned)g_robot_axis[i]);
-      /* Every glyph, including spaces, paints its black background: no digit ghosting. */
-      LCD_PutString(LCD1_START_X, y, buf, ILI9341_GREEN, ILI9341_BLACK, LCD1_BODY_SCALE);
-      g_prev_axis[i] = g_robot_axis[i];
-    }
+    uint16_t center_x = ((i & 1U) == 0U) ? 80U : 240U;
+    uint16_t center_y = (i < 2U) ? 60U : 180U;
+    uint16_t min_position;
+    uint16_t max_position;
+    uint8_t position_dots;
+    LCD_GetMasterAxisLimits(i, &min_position, &max_position);
+    if (g_robot_axis[i] <= min_position)
+      position_dots = 0U;
+    else if (g_robot_axis[i] >= max_position)
+      position_dots = 13U;
+    else
+      position_dots = (uint8_t)(((uint32_t)(g_robot_axis[i] - min_position) * 13U) /
+                                (max_position - min_position));
+    uint16_t position_color = LCD_IsMasterAxisAtLimit(i, g_robot_axis[i]) ?
+                              ILI9341_RED : ILI9341_GREEN;
+    uint16_t label_x = ((i & 1U) == 0U) ? 8U : 168U;
+    uint16_t label_y = (i < 2U) ? 6U : 126U;
+
+    if (previous_needle_dot[i] != 0xFFU)
+      LCD_DrawDashboardNeedle(center_x, center_y, previous_needle_dot[i], ILI9341_BLACK);
+
+    snprintf(buf, sizeof(buf), "A%u", (unsigned)(i + 1U));
+    LCD_PutString(label_x, label_y,
+                  buf, ILI9341_CYAN, ILI9341_BLACK, 1U);
+    snprintf(buf, sizeof(buf), "%04u", (unsigned)g_robot_axis[i]);
+    LCD_PutString((uint16_t)(center_x - 32U), (uint16_t)(center_y + 4U),
+                  buf, position_color, ILI9341_BLACK, 2U);
+    snprintf(buf, sizeof(buf), "%03u-%04u", (unsigned)min_position,
+             (unsigned)max_position);
+    LCD_PutString((uint16_t)(center_x - 32U), (uint16_t)(center_y + 40U),
+                  buf, ILI9341_WHITE, ILI9341_BLACK, 1U);
+    LCD_DrawDashboardArc(center_x, center_y, position_dots, ILI9341_GREEN);
+    LCD_DrawDashboardNeedle(center_x, center_y, position_dots, ILI9341_RED);
+    previous_needle_dot[i] = position_dots;
+    g_prev_axis[i] = g_robot_axis[i];
   }
+
+  dashboard_drawn = true;
 
   LCD1_CS_HIGH();
   osMutexRelease(lcdSpiMutexHandle);
@@ -1274,27 +1491,58 @@ void Update_LCD2_Clean(void)
 {
   static uint8_t prev_preset = 0xFF;
   static uint8_t prev_homing_status = 0xFF;
+  static uint16_t prev_master_voltage_mv[AX12_NUM_MOTORS] = {
+      0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU};
+  static uint8_t prev_master_temperature_c[AX12_NUM_MOTORS] = {
+      0xFFU, 0xFFU, 0xFFU, 0xFFU};
+  static uint8_t previous_voltage_needle_dot[AX12_NUM_MOTORS] = {
+      0xFFU, 0xFFU, 0xFFU, 0xFFU};
+  static bool admin_screen_drawn = false;
   static uint32_t prev_slave_status_sequence = 0xFFFFFFFFUL;
   static uint32_t prev_teach_save_event_sequence = 0xFFFFFFFFUL;
   static uint32_t prev_lcd_event_sequence = 0xFFFFFFFFUL;
   static bool prev_home_ready = false;
+  static uint8_t prev_auto_display_step = 0xFFU;
   bool preset_changed = (g_selected_preset != prev_preset);
   bool homing_changed = (g_homing_status != prev_homing_status);
+  bool admin_monitor_changed = false;
+
+  if (g_system_mode != MODE_ADMIN_JOG)
+  {
+    admin_screen_drawn = false;
+    for (uint8_t axis = 0U; axis < AX12_NUM_MOTORS; ++axis)
+      previous_voltage_needle_dot[axis] = 0xFFU;
+  }
+
+  if ((g_system_mode == MODE_ADMIN_JOG) && g_admin_dashboard_enabled)
+  {
+    for (uint8_t axis = 0U; axis < AX12_NUM_MOTORS; ++axis)
+    {
+      if ((g_master_voltage_mv[axis] != prev_master_voltage_mv[axis]) ||
+          (g_master_temperature_c[axis] != prev_master_temperature_c[axis]))
+      {
+        admin_monitor_changed = true;
+        break;
+      }
+    }
+  }
 
   if (g_system_mode == g_prev_mode && 
       g_run_state == g_prev_run_state && 
       g_emergency_stop == g_prev_estop &&
       !preset_changed && !homing_changed &&
       (g_teach_save_event_sequence == prev_teach_save_event_sequence) &&
-      (g_lcd_event_sequence == prev_lcd_event_sequence) &&
-      (g_home_ready == prev_home_ready) &&
-      (((g_system_mode != MODE_ADMIN_JOG) && (g_homing_status == 0U)) ||
+       (g_lcd_event_sequence == prev_lcd_event_sequence) &&
+       (g_home_ready == prev_home_ready) &&
+       !admin_monitor_changed &&
+       (((g_system_mode != MODE_ADMIN_JOG) && (g_homing_status == 0U)) ||
        (g_slave_status_sequence == prev_slave_status_sequence))) {
     return;
   }
 
   /* A mode transition needs a full refresh. */
   bool layout_changed = (g_system_mode != g_prev_mode) ||
+                        (g_run_state != g_prev_run_state) ||
                         (g_emergency_stop != g_prev_estop) || homing_changed ||
                         (g_home_ready != prev_home_ready);
   char buf[30];
@@ -1304,8 +1552,15 @@ void Update_LCD2_Clean(void)
     LCD1_CS_HIGH();
     LCD2_CS_LOW();
 
-    /* Full clear only when the screen layout changes; status updates redraw text only. */
-    if (layout_changed) ILI9341_FillScreen(ILI9341_BLACK);
+    /* The first Admin screen is explicitly cleared.  This removes the larger
+     * Home-mode glyphs even if the state changed while LCD2 was busy. */
+    if (layout_changed ||
+        ((g_system_mode == MODE_ADMIN_JOG) &&
+         (!admin_screen_drawn || g_admin_dashboard_clear_requested)))
+    {
+      ILI9341_FillScreen(ILI9341_BLACK);
+      g_admin_dashboard_clear_requested = false;
+    }
 
     uint16_t y1 = LCD2_START_Y;
     uint16_t y2 = LCD2_START_Y + LCD2_LINE_HEIGHT;
@@ -1344,16 +1599,86 @@ void Update_LCD2_Clean(void)
       LCD_PutString(LCD2_START_X, y5, (g_homing_status == 1U) ? "ALL AXIS -> 512     " : "INPUT ENABLED       ", ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
       LCD_PutString(LCD2_START_X, y6, "                    ", ILI9341_BLACK, ILI9341_BLACK, LCD2_BODY_SCALE);
     }
+    else if ((g_system_mode == MODE_ADMIN_JOG) && g_admin_dashboard_enabled)
+    {
+      /* Four 160 x 120 dashboard cells.  Each is a dot-drawn semicircular
+       * voltage gauge like a car speedometer; temperature is digital text. */
+      LCD_DrawDashboardGrid();
+
+      for (uint8_t axis = 0U; axis < AX12_NUM_MOTORS; ++axis)
+      {
+        uint16_t center_x = ((axis & 1U) == 0U) ? 80U : 240U;
+        uint16_t center_y = (axis < 2U) ? 60U : 180U;
+        uint16_t label_x = ((axis & 1U) == 0U) ? 8U : 168U;
+        uint16_t label_y = (axis < 2U) ? 6U : 126U;
+        uint16_t voltage_mv = g_master_voltage_mv[axis];
+        uint8_t temperature_c = g_master_temperature_c[axis];
+        uint8_t voltage_dots = 0U;
+        uint16_t voltage_color;
+
+        if (voltage_mv > 9000U)
+        {
+          voltage_dots = (uint8_t)(((voltage_mv - 9000U) * 13U) / 5000U);
+          if (voltage_dots > 13U) voltage_dots = 13U;
+        }
+
+        voltage_color = (voltage_mv < 10000U) ? ILI9341_RED :
+                        ((voltage_mv < 11000U) ? ILI9341_YELLOW : ILI9341_GREEN);
+
+        if (previous_voltage_needle_dot[axis] != 0xFFU)
+          LCD_DrawDashboardNeedle(center_x, center_y,
+                                  previous_voltage_needle_dot[axis], ILI9341_BLACK);
+
+        snprintf(buf, sizeof(buf), "A%u", (unsigned)(axis + 1U));
+        LCD_PutString(label_x, label_y, buf,
+                      ILI9341_CYAN, ILI9341_BLACK, 1U);
+        snprintf(buf, sizeof(buf), "%2u.%uV",
+                 (unsigned)(voltage_mv / 1000U),
+                 (unsigned)((voltage_mv % 1000U) / 100U));
+        LCD_PutString((uint16_t)(center_x - 40U), (uint16_t)(center_y - 4U), buf,
+                      ILI9341_WHITE, ILI9341_BLACK, 2U);
+        snprintf(buf, sizeof(buf), "%02uC", (unsigned)temperature_c);
+        LCD_PutString((uint16_t)(center_x - 24U),
+                      (uint16_t)(center_y + 28U), buf,
+                      (temperature_c >= 65U) ? ILI9341_RED :
+                      ((temperature_c >= 55U) ? ILI9341_YELLOW : ILI9341_GREEN),
+                      ILI9341_BLACK, 2U);
+        LCD_DrawDashboardArc(center_x, center_y, voltage_dots, voltage_color);
+        LCD_DrawDashboardNeedle(center_x, center_y, voltage_dots, ILI9341_RED);
+        previous_voltage_needle_dot[axis] = voltage_dots;
+      }
+      admin_screen_drawn = true;
+    }
     else if (g_system_mode == MODE_ADMIN_JOG)
     {
-      LCD_PutString(LCD2_START_X, y1, "[ADMIN JOG MODE]", ILI9341_CYAN, ILI9341_BLACK, LCD2_TITLE_SCALE);
-      LCD_PutString(LCD2_START_X, y2, "JOG RUNNING", ILI9341_GREEN, ILI9341_BLACK, LCD2_BODY_SCALE);
+      LCD_PutString(LCD2_START_X, y1, "[ADMIN JOG MODE]", ILI9341_CYAN,
+                    ILI9341_BLACK, LCD2_TITLE_SCALE);
+      LCD_PutString(LCD2_START_X, y2, "JOG RUNNING", ILI9341_GREEN,
+                    ILI9341_BLACK, LCD2_BODY_SCALE);
+      LCD_PutString(LCD2_START_X, y3, "BTN15: DASHBOARD", ILI9341_YELLOW,
+                    ILI9341_BLACK, LCD2_BODY_SCALE);
+      LCD_PutString(LCD2_START_X, y4, "                    ", ILI9341_BLACK,
+                    ILI9341_BLACK, LCD2_BODY_SCALE);
+      LCD_PutString(LCD2_START_X, y5, "                    ", ILI9341_BLACK,
+                    ILI9341_BLACK, LCD2_BODY_SCALE);
+      LCD_PutString(LCD2_START_X, y6, "                    ", ILI9341_BLACK,
+                    ILI9341_BLACK, LCD2_BODY_SCALE);
+      admin_screen_drawn = true;
     }
     else if (g_system_mode == MODE_TEACHING)
     {
       LCD_PutString(LCD2_START_X, y1, "[TEACHING MODE]     ", ILI9341_MAGENTA, ILI9341_BLACK, LCD2_TITLE_SCALE);
       
-      if (g_teach_save_status == 1U) {
+      if (g_teach_delete_status == 1U) {
+        sprintf(buf, "PRESET %02u DELETED", (unsigned)g_selected_preset);
+        LCD_PutString(LCD2_START_X, y2, buf, ILI9341_GREEN, ILI9341_BLACK, LCD2_BODY_SCALE);
+        LCD_PutString(LCD2_START_X, y3, "FLASH UPDATED       ", ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
+      } else if (g_teach_delete_status == 2U) {
+        LCD_PutString(LCD2_START_X, y2, "DELETE FLASH ERROR! ", ILI9341_RED, ILI9341_BLACK, LCD2_BODY_SCALE);
+      } else if (g_teach_delete_status == 3U) {
+        LCD_PutString(LCD2_START_X, y2, "SELECT PRESET 1~10 ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
+        LCD_PutString(LCD2_START_X, y3, "THEN PRESS BTN11    ", ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
+      } else if (g_teach_save_status == 1U) {
         sprintf(buf, "P%02u STEP%u SAVED", (unsigned)g_selected_preset, (unsigned)(g_teach_last_saved_step+1U));
         LCD_PutString(LCD2_START_X, y2, buf, ILI9341_GREEN, ILI9341_BLACK, LCD2_BODY_SCALE);
       } else if (g_teach_save_status == 2U) {
@@ -1368,11 +1693,15 @@ void Update_LCD2_Clean(void)
         }
         else
         {
-          LCD_PutString(LCD2_START_X, y2, "SELECT PRESET 1~11 ", ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
+          LCD_PutString(LCD2_START_X, y2, "SELECT PRESET 1~10 ", ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
         }
       }
       
-      LCD_PutString(LCD2_START_X, y3, "                    ", ILI9341_BLACK, ILI9341_BLACK, LCD2_BODY_SCALE);
+      if ((g_teach_delete_status != 1U) && (g_teach_delete_status != 3U))
+      {
+        sprintf(buf, "STEPS: %u", (unsigned)TeachingSequence_CountSaved(g_selected_preset));
+        LCD_PutString(LCD2_START_X, y3, buf, ILI9341_CYAN, ILI9341_BLACK, LCD2_BODY_SCALE);
+      }
       LCD_PutString(LCD2_START_X, y4, "                    ", ILI9341_BLACK, ILI9341_BLACK, LCD2_BODY_SCALE);
     }
     else if (g_system_mode == MODE_AUTO)
@@ -1381,17 +1710,30 @@ void Update_LCD2_Clean(void)
       uint16_t auto_y3 = (uint16_t)(y3 + 20U);
       uint16_t auto_y4 = (uint16_t)(y4 + 30U);
       uint16_t auto_y5 = (uint16_t)(y5 + 40U);
+      bool auto_step_changed = (g_auto_sequence_step != prev_auto_display_step);
 
-      LCD_PutString(LCD2_START_X, y1, "[AUTO MOVE MODE]    ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_TITLE_SCALE);
+      /* On an AUTO step change, redraw only the STEP line.  The title, preset
+       * and command hints stay untouched, avoiding a slow full-screen clear. */
+      if (layout_changed)
+      {
+        LCD_PutString(LCD2_START_X, y1, "[AUTO MOVE MODE]    ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_TITLE_SCALE);
+      }
 
-      /* Fixed-line AUTO layout.  Each line paints its own background, so a
-       * step update never clears or overlaps the entire LCD. */
-      sprintf(buf, "PRESET: %02u        ", (unsigned)g_selected_preset);
-      LCD_PutString(LCD2_START_X, auto_y2, buf, ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
-      sprintf(buf, "STEP: %u/%u          ", (unsigned)TeachingSequence_Rank(g_selected_preset,g_auto_sequence_step), (unsigned)TeachingSequence_CountSaved(g_selected_preset));
-      LCD_PutString(LCD2_START_X, auto_y3, buf, ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
-      LCD_PutString(LCD2_START_X, auto_y4, "BTN14               ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
-      LCD_PutString(LCD2_START_X, auto_y5, "ENTER / START       ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
+      if (layout_changed || preset_changed)
+      {
+        sprintf(buf, "PRESET: %02u        ", (unsigned)g_selected_preset);
+        LCD_PutString(LCD2_START_X, auto_y2, buf, ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
+      }
+      if (layout_changed || preset_changed || auto_step_changed)
+      {
+        sprintf(buf, "STEP: %u/%u          ", (unsigned)TeachingSequence_Rank(g_selected_preset,g_auto_sequence_step), (unsigned)TeachingSequence_CountSaved(g_selected_preset));
+        LCD_PutString(LCD2_START_X, auto_y3, buf, ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
+      }
+      if (layout_changed)
+      {
+        LCD_PutString(LCD2_START_X, auto_y4, "BTN14               ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
+        LCD_PutString(LCD2_START_X, auto_y5, "ENTER / START       ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
+      }
     }
 
     LCD2_CS_HIGH();
@@ -1403,10 +1745,16 @@ void Update_LCD2_Clean(void)
     g_prev_estop = g_emergency_stop;
     prev_preset = g_selected_preset;
     prev_homing_status = g_homing_status;
+    for (uint8_t axis = 0U; axis < AX12_NUM_MOTORS; ++axis)
+    {
+      prev_master_voltage_mv[axis] = g_master_voltage_mv[axis];
+      prev_master_temperature_c[axis] = g_master_temperature_c[axis];
+    }
     prev_slave_status_sequence = g_slave_status_sequence;
     prev_teach_save_event_sequence = g_teach_save_event_sequence;
     prev_lcd_event_sequence = g_lcd_event_sequence;
     prev_home_ready = g_home_ready;
+    prev_auto_display_step = g_auto_sequence_step;
   }
 }
 /* USER CODE END Application */
