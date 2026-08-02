@@ -90,8 +90,13 @@ AX-12A는 외부 9~12V로 구동하고 외부 전원 GND와 Nucleo GND를 반드
 2. BTN15 JOG로 4축 추종과 방향을 확인합니다.
 3. BTN13, Preset 선택, BTN12 순서로 동작 Step을 저장합니다.
 4. BTN14, Preset 선택, BTN14 순서로 Auto 시퀀스를 시작합니다.
-5. 첫 Auto Step은 AX_SLAVE Sharp 센서 감지 후 움직이며 이후 Step은
-   센서를 다시 기다리지 않습니다.
+5. Home 완료 후 LCD2는 `AUTO SENSOR MODE / PRESET 01`로 전환됩니다.
+6. 물체가 없으면 `WAITING`, 30cm 이내에서 감지되면 `DETECTED`와
+   `5, 4, 3, 2, 1` 카운트다운을 표시합니다.
+7. 5초 동안 연속 감지되면 `START`를 표시한 뒤 Preset 1 Auto를
+   자동 실행합니다. 감지가 끊기거나 상태 회신이 600ms 이상 없으면
+   카운트다운을 초기화합니다.
+8. 이후 Step은 Sharp 센서를 다시 기다리지 않습니다.
 
 ## Fusion UART 프로토콜
 
