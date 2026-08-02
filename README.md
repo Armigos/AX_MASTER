@@ -165,6 +165,56 @@ cmake --build --preset Debug
 결과 파일은 `build/Debug/AX_MASTER.elf`입니다. STM32CubeIDE에서는
 `AX_MASTER.ioc`를 열고 Build 후 ST-LINK로 다운로드합니다.
 
+### VS Code 빌드·업로드 경로 주의사항
+
+`.vscode/settings.json`과 `.vscode/tasks.json`에는 STM32CubeIDE에 포함된
+Ninja, ARM GCC, STM32 Programmer의 절대경로가 들어 있습니다. 이 경로는
+현재 컴퓨터의 설치 위치와 CubeIDE 버전에 맞춘 값이므로 다른 컴퓨터에서
+사용할 때는 해당 PC에 설치된 실제 경로로 반드시 변경해야 합니다.
+
+- `cmake.environment.PATH`: `arm-none-eabi-gcc`가 있는 `tools/bin` 폴더
+- `CMAKE_MAKE_PROGRAM`: `ninja.exe`의 전체 경로
+- `Flash Only.command`: `STM32_Programmer_CLI.exe`의 전체 경로
+- `Flash Only`의 ELF 경로: `build/Debug/AX_MASTER.elf`
+
+경로를 변경한 뒤 VS Code에서 `CMake: Delete Cache and Reconfigure`를
+실행하고 다시 빌드합니다. `Ctrl+Shift+F`는 기존 ELF를 업로드하는
+`Flash Only` 작업이므로, 코드 변경 후에는 먼저 빌드해야 합니다.
+
+### Sharp 감지는 정상인데 LCD가 `WAITING`에 멈추는 경우
+
+GP2Y0A21YK0F의 거리값과 SLAVE `sharp_detected`가 정상이어도 LCD2가
+`WAITING`에서 바뀌지 않는 현상이 있었습니다. 다음 TelePlot 값을 양쪽
+보드에서 확인해 센서, 통신, Auto 조건을 순서대로 분리 진단했습니다.
+
+```text
+SLAVE: sharp_cm, sharp_detected
+MASTER: master_sharp_detected, slave_status_flags, slave_status_age_ms
+MASTER: auto_home_ready, auto_system_mode, auto_run_state
+MASTER: auto_preset1_mask, auto_countdown, auto_start_pending
+```
+
+센서와 통신은 정상이었고 `auto_countdown`도 내부적으로 진행됐지만,
+기존 글꼴 함수가 문자 픽셀마다 ILI9341 주소 창을 다시 설정하고 SPI를
+전송해 LCD 화면 한 번을 그리는 데 수 초가 걸리는 것이 근본 원인이었습니다.
+카운트다운은 끝났지만 화면에는 먼저 그린 `WAITING`이 남아 있었습니다.
+
+해결을 위해 `Core/Src/lcd_font.c`에서 한 글자를 하나의 주소 창으로 잡고
+RGB565 행 데이터를 연속 SPI 블록으로 전송하도록 변경했습니다. 또한
+LCD2의 공유 SPI mutex 대기시간을 늘리고 Auto 센서 화면을 주기적으로
+갱신합니다. Home 시작·완료 시 Run 상태도 `STOPPED`로 초기화하여 항상
+Preset 1 센서 대기 조건에 진입하도록 했습니다.
+
+정상 동작 순서는 다음과 같습니다.
+
+```text
+WAITING → DETECTED → 5 → 4 → 3 → 2 → 1 → START → Preset 1 Auto
+```
+
+물체가 없을 때는 `sharp_cm > 30`, `sharp_detected = 0`이어야 합니다.
+센서 앞에 바닥판이나 로봇 부품이 있으면 배경을 물체로 감지할 수 있으므로
+렌즈를 바닥보다 높이고 정면 30cm 범위를 비운 상태에서 시험합니다.
+
 ## 최종 시험 순서
 
 1. 양쪽 AX-12 ID와 USART1 1Mbps를 확인합니다.
