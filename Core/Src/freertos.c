@@ -71,9 +71,8 @@ typedef enum {
 #define BT_DEFAULT_STATUS_PERIOD_MS   200U
 /* Faster arrival feedback only while BTN14 sequence execution is active. */
 #define BT_AUTO_STATUS_PERIOD_MS        10U /* Auto arrival feedback period. */
-#define BT_STATUS_PAYLOAD_LENGTH       17U
+#define BT_STATUS_PAYLOAD_LENGTH       20U
 #define BT_RX_BUFFER_SIZE              64U
-#define SHARP_AUTO_PRESET                1U
 #define SHARP_AUTO_COUNTDOWN_MS       5000U
 #define SHARP_AUTO_START_DISPLAY_MS    750U
 #define SHARP_STATUS_TIMEOUT_MS         600U
@@ -146,8 +145,12 @@ static volatile bool g_estop_request = false;
 volatile uint32_t g_slave_status_sequence = 0U;
 volatile bool g_auto_motion_released = false;
 static volatile bool g_sharp_detected = false;
+static volatile uint16_t g_sharp_mv = 0U;
+static volatile uint16_t g_sharp_distance_cm = 80U;
 static volatile uint8_t g_slave_status_flags = 0U;
 static volatile bool g_sharp_auto_start_pending = false;
+/* Require the object to leave the sensing range before another countdown. */
+static volatile bool g_sharp_auto_rearm_required = false;
 static bool g_sharp_countdown_active = false;
 static volatile uint8_t g_sharp_countdown_value = 0U;
 static uint32_t g_sharp_detected_since_ms = 0U;
@@ -566,13 +569,30 @@ void Start_AX_12(void *argument)
       ++g_lcd_event_sequence;
     }
 
-    /* After Home, AUTO/Preset 1 acts as a sensor gate. Detection must remain
-     * continuously valid for five seconds. Leaving AUTO, losing detection,
-     * E-stop, or an empty preset cancels the countdown. */
+    /* The IR sensor is armed only after the operator enters AUTO and selects
+     * a valid teaching preset. After a run, the object must leave the sensor
+     * range before another five-second countdown may begin. */
+    if (g_sharp_auto_rearm_required)
+    {
+      SharpAuto_ResetCountdown();
+      if (!g_sharp_detected && (g_run_state == RUN_STATE_COMPLETED))
+      {
+        g_sharp_auto_rearm_required = false;
+        if (g_run_state == RUN_STATE_COMPLETED)
+        {
+          g_run_state = RUN_STATE_STOPPED;
+        }
+        ++g_lcd_event_sequence;
+      }
+    }
+
     if (g_home_ready && !g_emergency_stop &&
         (g_system_mode == MODE_AUTO) &&
         (g_run_state == RUN_STATE_STOPPED) &&
-        (g_teach_memory[SHARP_AUTO_PRESET].saved_mask != 0U))
+        !g_sharp_auto_rearm_required &&
+        (g_selected_preset >= 1U) &&
+        (g_selected_preset <= TEACHING_PRESET_COUNT) &&
+        (g_teach_memory[g_selected_preset].saved_mask != 0U))
     {
       if (!g_sharp_detected)
       {
@@ -613,7 +633,7 @@ void Start_AX_12(void *argument)
       else if ((int32_t)(now_ms - g_sharp_auto_start_due_ms) >= 0)
       {
         g_sharp_auto_start_pending = false;
-        (void)AutoStartPreset(SHARP_AUTO_PRESET);
+        (void)AutoStartPreset(g_selected_preset);
       }
     }
     else
@@ -847,6 +867,8 @@ void Start_Teleplot(void *argument)
     printf(">master_voltage4_mV:%u\r\n", (unsigned)g_master_voltage_mv[3]);
     printf(">master_sharp_detected:%u\r\n",
            g_sharp_detected ? 1U : 0U);
+    printf(">master_sharp_mv:%u\r\n", (unsigned)g_sharp_mv);
+    printf(">master_sharp_cm:%u\r\n", (unsigned)g_sharp_distance_cm);
     printf(">slave_status_flags:%u\r\n",
            (unsigned)g_slave_status_flags);
     printf(">slave_status_age_ms:%lu\r\n",
@@ -855,8 +877,10 @@ void Start_Teleplot(void *argument)
     printf(">auto_home_ready:%u\r\n", g_home_ready ? 1U : 0U);
     printf(">auto_system_mode:%u\r\n", (unsigned)g_system_mode);
     printf(">auto_run_state:%u\r\n", (unsigned)g_run_state);
-    printf(">auto_preset1_mask:%lu\r\n",
-           (unsigned long)g_teach_memory[SHARP_AUTO_PRESET].saved_mask);
+    printf(">auto_selected_preset:%u\r\n", (unsigned)g_selected_preset);
+    printf(">auto_selected_preset_mask:%lu\r\n",
+           (unsigned long)((g_selected_preset <= TEACHING_PRESET_COUNT) ?
+                           g_teach_memory[g_selected_preset].saved_mask : 0U));
     printf(">auto_countdown:%u\r\n",
            (unsigned)g_sharp_countdown_value);
     printf(">auto_start_pending:%u\r\n",
@@ -1054,6 +1078,9 @@ static void BT_ProcessReceivedByte(uint8_t x)
     {
       bool sharp_detected = ((d[16U] & 0x01U) != 0U);
       g_slave_status_flags = d[16U];
+      g_sharp_mv = (uint16_t)d[17U] |
+                   ((uint16_t)d[18U] << 8U);
+      g_sharp_distance_cm = d[19U];
       g_sharp_status_updated_ms = HAL_GetTick();
       if (sharp_detected != g_sharp_detected)
       {
@@ -1107,8 +1134,11 @@ static void BT_ProcessReceivedByte(uint8_t x)
         g_home_ready = true;
         g_motion_type = MOTION_NONE;
         g_run_state = RUN_STATE_STOPPED;
-        g_selected_preset = SHARP_AUTO_PRESET;
-        SetSystemMode(MODE_AUTO);
+        /* Home only establishes a safe starting pose.  Do not arm the IR
+         * sensor or enter AUTO until the operator explicitly presses BTN14
+         * and selects a teaching preset. */
+        g_selected_preset = 0U;
+        SetSystemMode(MODE_TEACHING);
         SharpAuto_ResetCountdown();
         ++g_lcd_event_sequence;
         g_prev_mode = (SystemMode_t)0xFF;
@@ -1199,6 +1229,7 @@ static bool AutoStartPreset(uint8_t preset)
   g_auto_motion_released = false;
   g_auto_sequence_last_sent = false;
   g_auto_step_delay_active = false;
+  g_sharp_auto_rearm_required = true;
   BT_SendAutoStartPositions(g_motion_target);
   ++g_lcd_event_sequence;
   g_prev_mode = (SystemMode_t)0xFF;
@@ -1301,9 +1332,8 @@ void Process_Key_Event(uint8_t key)
   {
     g_admin_jog_enabled = false;
     g_teach_save_status = 0U;
-    /* First BTN14 enters Auto mode only.  A second BTN14, while AUTO is
-     * READY, starts the selected preset.  This prevents an accidental
-     * sequence start when BTN14 is pressed from Teaching/Admin mode. */
+    /* BTN14 enters AUTO sensor mode. The selected teaching preset is started
+     * by the IR sensor, not by a second BTN14 press. */
     if (g_system_mode != MODE_AUTO)
     {
       SetSystemMode(MODE_AUTO);
@@ -1312,10 +1342,6 @@ void Process_Key_Event(uint8_t key)
       g_auto_step_delay_active = false;
       g_auto_sequence_last_sent = false;
       g_auto_motion_released = false;
-    }
-    else if (g_run_state == RUN_STATE_STOPPED)
-    {
-      (void)AutoStartPreset(g_selected_preset);
     }
     g_prev_mode = (SystemMode_t)0xFF;
     return;
@@ -1359,6 +1385,15 @@ void Process_Key_Event(uint8_t key)
 
   if ((key == 12U) && (g_system_mode == MODE_TEACHING))
   {
+    if ((g_selected_preset == 0U) ||
+        (g_selected_preset > TEACHING_PRESET_COUNT))
+    {
+      g_teach_save_status = 4U;
+      g_teach_delete_status = 0U;
+      ++g_lcd_event_sequence;
+      g_prev_mode = (SystemMode_t)0xFF;
+      return;
+    }
     TeachingPoint_t *slot=&g_teach_memory[g_selected_preset].step[g_teach_capture_step];
     bool changed=false;
     for(uint8_t i=0U;i<4U;i++){uint16_t diff=(slot->axis[i]>g_robot_axis[i])?(slot->axis[i]-g_robot_axis[i]):(g_robot_axis[i]-slot->axis[i]);changed=changed||(diff>TEACHING_SAVE_DEADBAND);}
@@ -1393,6 +1428,7 @@ void Process_Key_Event(uint8_t key)
       g_motion_type = MOTION_NONE;
       g_auto_step_delay_active = false;
       g_auto_sequence_last_sent = false;
+      SharpAuto_ResetCountdown();
     }
     g_prev_mode = (SystemMode_t)0xFF;
   }
@@ -1842,6 +1878,8 @@ void Update_LCD2_Clean(void)
         LCD_PutString(LCD2_START_X, y2, "FLASH SAVE ERROR!   ", ILI9341_RED, ILI9341_BLACK, LCD2_BODY_SCALE);
       } else if (g_teach_save_status == 3U) {
         LCD_PutString(LCD2_START_X, y2, "STEP UNCHANGED      ", ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
+      } else if (g_teach_save_status == 4U) {
+        LCD_PutString(LCD2_START_X, y2, "SELECT PRESET FIRST ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
       } else {
         if (g_selected_preset >= 1U)
         {
@@ -1859,7 +1897,9 @@ void Update_LCD2_Clean(void)
         sprintf(buf, "STEPS: %u", (unsigned)TeachingSequence_CountSaved(g_selected_preset));
         LCD_PutString(LCD2_START_X, y3, buf, ILI9341_CYAN, ILI9341_BLACK, LCD2_BODY_SCALE);
       }
-      LCD_PutString(LCD2_START_X, y4, "                    ", ILI9341_BLACK, ILI9341_BLACK, LCD2_BODY_SCALE);
+      LCD_PutString(LCD2_START_X, y4, "1-10: SELECT PRESET ", ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
+      LCD_PutString(LCD2_START_X, y5, "12: SAVE STEP       ", ILI9341_GREEN, ILI9341_BLACK, LCD2_BODY_SCALE);
+      LCD_PutString(LCD2_START_X, y6, "11: DELETE 14:AUTO  ", ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
     }
     else if (g_system_mode == MODE_AUTO)
     {
@@ -1873,17 +1913,32 @@ void Update_LCD2_Clean(void)
       {
         LCD_PutString(LCD2_START_X, y1, "[AUTO SENSOR MODE]  ",
                       ILI9341_CYAN, ILI9341_BLACK, LCD2_TITLE_SCALE);
-        LCD_PutString(LCD2_START_X, auto_y2, "PRESET: 01         ",
-                      ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
-        if (g_teach_memory[SHARP_AUTO_PRESET].saved_mask == 0U)
+        if (g_selected_preset == 0U)
         {
-          LCD_PutString(LCD2_START_X, auto_y3, "PRESET 01 EMPTY     ",
+          LCD_PutString(LCD2_START_X, auto_y2, "PRESET: SELECT 1-10 ",
+                        ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
+          LCD_PutString(LCD2_START_X, auto_y3, "NO PRESET SELECTED  ",
                         ILI9341_RED, ILI9341_BLACK, LCD2_BODY_SCALE);
-          LCD_PutString(LCD2_START_X, auto_y4, "TEACH PRESET FIRST  ",
+          LCD_PutString(LCD2_START_X, auto_y4, "PRESS PRESET BUTTON ",
+                        ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
+        }
+        else if (g_teach_memory[g_selected_preset].saved_mask == 0U)
+        {
+          sprintf(buf, "PRESET %02u EMPTY     ",
+                  (unsigned)g_selected_preset);
+          LCD_PutString(LCD2_START_X, auto_y2, buf,
+                        ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
+          LCD_PutString(LCD2_START_X, auto_y3, "TEACH PRESET FIRST  ",
+                        ILI9341_RED, ILI9341_BLACK, LCD2_BODY_SCALE);
+          LCD_PutString(LCD2_START_X, auto_y4, "SELECT ANOTHER      ",
                         ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
         }
         else if (!g_sharp_detected)
         {
+          sprintf(buf, "PRESET: %02u        ",
+                  (unsigned)g_selected_preset);
+          LCD_PutString(LCD2_START_X, auto_y2, buf,
+                        ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
           LCD_PutString(LCD2_START_X, auto_y3, "WAITING             ",
                         ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
           LCD_PutString(LCD2_START_X, auto_y4, "OBJECT <= 30 CM     ",
@@ -1891,6 +1946,10 @@ void Update_LCD2_Clean(void)
         }
         else
         {
+          sprintf(buf, "PRESET: %02u        ",
+                  (unsigned)g_selected_preset);
+          LCD_PutString(LCD2_START_X, auto_y2, buf,
+                        ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
           LCD_PutString(LCD2_START_X, auto_y3, "DETECTED            ",
                         ILI9341_GREEN, ILI9341_BLACK, LCD2_BODY_SCALE);
           if (g_sharp_auto_start_pending)
@@ -1965,4 +2024,3 @@ void Update_LCD2_Clean(void)
   }
 }
 /* USER CODE END Application */
-

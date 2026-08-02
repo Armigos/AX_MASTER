@@ -4,10 +4,10 @@
         {
             "label": "Flash Only",
             "type": "shell",
-            "command": "C:\\ST\\STM32CubeIDE_2.1.1\\STM32CubeIDE\\plugins\\com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.win32_2.2.400.202601091506\\tools\\bin\\STM32_Programmer_CLI.exe",
+            "command": "STM32_Programmer_CLI",
             "args": [
                 "-c", "port=SWD mode=UR",
-                "-w", "build/Debug/AX_MASTER.elf",
+                "-w", "${workspaceFolder}/build/Debug/AX_MASTER.elf",
                 "-v",
                 "-rst"
             ],
