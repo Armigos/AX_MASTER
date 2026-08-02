@@ -100,22 +100,43 @@ static const uint8_t font8x16[] = {
     0x00,0x00,0x00,0x00,0x10,0x6C,0xC6,0x44,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00  // ~ (물결표 추가 완료)
 };
 
-// 1글자 그려주는 함수
+// Draw one glyph as a continuous RGB565 window. The previous implementation
+// opened a new ILI9341 address window for every pixel, which made a single
+// status-screen refresh take several seconds on the shared SPI bus.
 void LCD_PutChar(uint16_t x, uint16_t y, char ch, uint16_t color, uint16_t bg_color, uint8_t scale) {
+    uint8_t row_pixels[8U * 4U * 2U];
+
     if (ch < ' ' || ch > '~') {
         ch = ' ';
     }
+    if ((scale == 0U) || (scale > 4U)) {
+        return;
+    }
+    if (((uint32_t)x + (8U * scale) > ILI9341_WIDTH) ||
+        ((uint32_t)y + (16U * scale) > ILI9341_HEIGHT)) {
+        return;
+    }
 
     uint32_t offset = (uint32_t)(ch - 32) * 16;
+    ILI9341_SetAddressWindow(x, y,
+                            (uint16_t)(x + (8U * scale) - 1U),
+                            (uint16_t)(y + (16U * scale) - 1U));
+    LCD_DC_DATA();
 
     for (uint8_t i = 0; i < 16; i++) {
         uint8_t b = font8x16[offset + i];
         for (uint8_t j = 0; j < 8; j++) {
-            if (b & (0x80 >> j)) {
-                ILI9341_DrawPixelScaled(x + (j * scale), y + (i * scale), color, scale);
-            } else {
-                ILI9341_DrawPixelScaled(x + (j * scale), y + (i * scale), bg_color, scale);
+            uint16_t pixel_color = (b & (0x80U >> j)) ? color : bg_color;
+            for (uint8_t sx = 0U; sx < scale; ++sx) {
+                uint16_t index = (uint16_t)(((j * scale) + sx) * 2U);
+                row_pixels[index] = (uint8_t)(pixel_color >> 8U);
+                row_pixels[index + 1U] = (uint8_t)pixel_color;
             }
+        }
+        for (uint8_t sy = 0U; sy < scale; ++sy) {
+            (void)HAL_SPI_Transmit(&hspi1, row_pixels,
+                                   (uint16_t)(8U * scale * 2U),
+                                   HAL_MAX_DELAY);
         }
     }
 }
