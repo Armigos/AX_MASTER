@@ -1111,6 +1111,24 @@ static void BT_ProcessReceivedByte(uint8_t x)
       if (error > tolerance) arrived = false; /* boundary value is included. */
     }
 
+    /* Home is complete only when both sides have reached 512.  The Follower
+     * can arrive first; switching to Teaching at that moment would enable
+     * SET_ALL_POS and send the Leader's still-moving positions back to it. */
+    if (g_motion_type == MOTION_HOME)
+    {
+      for (uint8_t k = 0U; k < 4U; ++k)
+      {
+        uint16_t master_error = (g_robot_axis[k] > g_home_positions[k]) ?
+                                (g_robot_axis[k] - g_home_positions[k]) :
+                                (g_home_positions[k] - g_robot_axis[k]);
+        if (master_error > HOME_POSITION_TOLERANCE)
+        {
+          arrived = false;
+          break;
+        }
+      }
+    }
+
     g_motor_load = (uint16_t)(load_sum / 4U);
     ++g_slave_status_sequence;
     /* PB2 does not use a previously cached status.  The slave sends this

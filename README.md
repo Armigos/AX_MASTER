@@ -55,7 +55,7 @@ LCD에는 `1-10: SELECT PRESET`, `12: SAVE STEP`, `11: DELETE 14:AUTO`
 
 ### Auto 센서 모드
 
-1. BTN16으로 Home을 완료합니다. Home 완료 직후에는 자동 실행하지 않고
+1. BTN16으로 Home을 완료합니다. Leader와 Follower 양쪽 축이 모두 `512`에 도착한 뒤에만 Home을 완료로 판정하며, Follower가 먼저 도착해도 Leader의 이동 중 위치를 다시 전송하지 않습니다. Home 완료 직후에는 자동 실행하지 않고
    대기합니다.
 2. BTN14를 눌러 Auto 센서 모드에 들어갑니다.
 3. BTN1~10으로 실행할 Teaching Preset을 선택합니다.
