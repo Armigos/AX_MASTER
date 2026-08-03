@@ -44,7 +44,8 @@ typedef enum {
 typedef enum {
     MOTION_NONE = 0,
     MOTION_AUTO,
-    MOTION_HOME
+    MOTION_HOME,
+    MOTION_AUTO_RETURN_HOME
 } MotionType_t;
 
 typedef enum {
@@ -668,7 +669,8 @@ void Start_AX_12(void *argument)
     /* Home is safety-critical.  The first command is sent immediately by
      * BTN16; repeat it while Home is still active so a busy/temporarily lost
      * Bluetooth frame cannot leave only the master controller moving. */
-    if ((g_motion_type == MOTION_HOME) &&
+    if (((g_motion_type == MOTION_HOME) ||
+         (g_motion_type == MOTION_AUTO_RETURN_HOME)) &&
         ((int32_t)(now_ms - g_home_retry_due_ms) >= 0))
     {
       BT_SendPositionsCommand(BT_CMD_HOME_POS, g_home_positions);
@@ -831,7 +833,8 @@ void Start_AX_12(void *argument)
 
     uint32_t status_period_ms =
         (((g_system_mode == MODE_AUTO) && (g_run_state == RUN_STATE_RUNNING)) ||
-         (g_motion_type == MOTION_HOME)) ?
+         (g_motion_type == MOTION_HOME) ||
+         (g_motion_type == MOTION_AUTO_RETURN_HOME)) ?
         BT_AUTO_STATUS_PERIOD_MS : g_bt_status_period_ms;
     if (!g_emergency_stop &&
         ((now_ms - last_status_request_ms) >= status_period_ms))
@@ -1114,7 +1117,8 @@ static void BT_ProcessReceivedByte(uint8_t x)
     /* Home is complete only when both sides have reached 512.  The Follower
      * can arrive first; switching to Teaching at that moment would enable
      * SET_ALL_POS and send the Leader's still-moving positions back to it. */
-    if (g_motion_type == MOTION_HOME)
+    if ((g_motion_type == MOTION_HOME) ||
+        (g_motion_type == MOTION_AUTO_RETURN_HOME))
     {
       for (uint8_t k = 0U; k < 4U; ++k)
       {
@@ -1148,20 +1152,24 @@ static void BT_ProcessReceivedByte(uint8_t x)
     }
     if (arrived && ((g_motion_type != MOTION_AUTO) || g_auto_motion_released))
     {
-      if (g_motion_type == MOTION_HOME)
+      if ((g_motion_type == MOTION_HOME) ||
+          (g_motion_type == MOTION_AUTO_RETURN_HOME))
       {
+        bool auto_return = (g_motion_type == MOTION_AUTO_RETURN_HOME);
         g_homing_status = 0U;
         g_home_ready = true;
         g_motion_type = MOTION_NONE;
-        g_run_state = RUN_STATE_STOPPED;
-        /* Home only establishes a safe starting pose.  Do not arm the IR
-         * sensor or enter AUTO until the operator explicitly presses BTN14
-         * and selects a teaching preset. */
-        g_selected_preset = 0U;
-        SetSystemMode(MODE_TEACHING);
-        /* Home only establishes the reference pose.  Do not leave either
-         * controller holding torque or start the teaching position stream
-         * until the operator explicitly enters Teaching/Admin JOG. */
+        g_run_state = auto_return ? RUN_STATE_COMPLETED : RUN_STATE_STOPPED;
+        if (!auto_return)
+        {
+          /* Home only establishes a safe starting pose.  Do not arm the IR
+           * sensor or enter AUTO until the operator explicitly presses BTN14
+           * and selects a teaching preset. */
+          g_selected_preset = 0U;
+          SetSystemMode(MODE_TEACHING);
+        }
+        /* Do not leave either controller holding torque after a home pose or
+         * start the teaching stream until the operator explicitly requests it. */
         g_admin_jog_enabled = false;
         MasterController_RequestAction(MASTER_CTRL_ACTION_MANUAL);
         Robot_SetTorque(0U);
@@ -1177,9 +1185,19 @@ static void BT_ProcessReceivedByte(uint8_t x)
       }
       else
       {
-        g_run_state = RUN_STATE_COMPLETED;
-        g_motion_type = MOTION_NONE;
-        g_prev_mode = (SystemMode_t)0xFF;
+        /* Every Auto cycle ends at the neutral 512 pose.  Keep this separate
+         * from manual Home so Auto remains armed and can re-arm after the
+         * object leaves the sensor range. */
+        for (uint8_t axis = 0U; axis < 4U; ++axis)
+        {
+          g_motion_target[axis] = g_home_positions[axis];
+        }
+        g_motion_type = MOTION_AUTO_RETURN_HOME;
+        g_homing_status = 1U;
+        MasterController_RequestAction(MASTER_CTRL_ACTION_HOME);
+        BT_SendPositionsCommand(BT_CMD_HOME_POS, g_home_positions);
+        g_home_retry_due_ms = HAL_GetTick() + 250U;
+        ++g_lcd_event_sequence;
       }
     }
   }
