@@ -1203,6 +1203,17 @@ static void SharpAuto_ResetCountdown(void)
 
 static bool AutoStartPreset(uint8_t preset)
 {
+  /* Re-check the live sensor state immediately before sending START_AUTO.
+   * The countdown is intentionally not enough by itself: a stale status
+   * frame or a detection that disappeared during the display delay must
+   * never start the robot. */
+  if (!g_sharp_detected ||
+      ((HAL_GetTick() - g_sharp_status_updated_ms) > SHARP_STATUS_TIMEOUT_MS))
+  {
+    SharpAuto_ResetCountdown();
+    return false;
+  }
+
   if (!g_home_ready || g_emergency_stop ||
       (preset < 1U) || (preset > TEACHING_PRESET_COUNT) ||
       (g_teach_memory[preset].saved_mask == 0U))
