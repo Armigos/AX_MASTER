@@ -1159,6 +1159,12 @@ static void BT_ProcessReceivedByte(uint8_t x)
          * and selects a teaching preset. */
         g_selected_preset = 0U;
         SetSystemMode(MODE_TEACHING);
+        /* Home only establishes the reference pose.  Do not leave either
+         * controller holding torque or start the teaching position stream
+         * until the operator explicitly enters Teaching/Admin JOG. */
+        g_admin_jog_enabled = false;
+        MasterController_RequestAction(MASTER_CTRL_ACTION_MANUAL);
+        Robot_SetTorque(0U);
         SharpAuto_ResetCountdown();
         ++g_lcd_event_sequence;
         g_prev_mode = (SystemMode_t)0xFF;
