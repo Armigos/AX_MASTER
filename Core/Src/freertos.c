@@ -1954,7 +1954,7 @@ void Update_LCD2_Clean(void)
                         ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
           LCD_PutString(LCD2_START_X, auto_y3, "WAITING             ",
                         ILI9341_YELLOW, ILI9341_BLACK, LCD2_BODY_SCALE);
-          LCD_PutString(LCD2_START_X, auto_y4, "OBJECT <= 30 CM     ",
+          LCD_PutString(LCD2_START_X, auto_y4, "OBJECT 10-17 CM     ",
                         ILI9341_WHITE, ILI9341_BLACK, LCD2_BODY_SCALE);
         }
         else
