@@ -74,8 +74,8 @@ typedef enum {
 #define BT_AUTO_STATUS_PERIOD_MS        10U /* Auto arrival feedback period. */
 #define BT_STATUS_PAYLOAD_LENGTH       20U
 #define BT_RX_BUFFER_SIZE              64U
-#define SHARP_AUTO_COUNTDOWN_MS       3000U
-#define SHARP_AUTO_COUNTDOWN_SECONDS      3U
+#define SHARP_AUTO_COUNTDOWN_MS       5000U
+#define SHARP_AUTO_COUNTDOWN_SECONDS      5U
 #define SHARP_AUTO_START_DISPLAY_MS    750U
 #define SHARP_STATUS_TIMEOUT_MS         600U
 /* Home completion is based on actual slave positions.  Keep this slightly
