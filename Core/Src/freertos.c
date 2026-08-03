@@ -834,7 +834,8 @@ void Start_AX_12(void *argument)
     uint32_t status_period_ms =
         (((g_system_mode == MODE_AUTO) && (g_run_state == RUN_STATE_RUNNING)) ||
          (g_motion_type == MOTION_HOME) ||
-         (g_motion_type == MOTION_AUTO_RETURN_HOME)) ?
+         (g_motion_type == MOTION_AUTO_RETURN_HOME) ||
+         g_sharp_auto_rearm_required) ?
         BT_AUTO_STATUS_PERIOD_MS : g_bt_status_period_ms;
     if (!g_emergency_stop &&
         ((now_ms - last_status_request_ms) >= status_period_ms))
